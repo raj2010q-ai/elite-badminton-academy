@@ -1,0 +1,984 @@
+```react
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { 
+  Home, Users, CreditCard, MessageCircle, Settings, 
+  Plus, Search, Filter, ChevronRight, Phone, Calendar, 
+  TrendingUp, AlertCircle, CheckCircle, Clock, FileText,
+  Trash2, Edit, X, Download, Share2, Activity, UserPlus, FileSpreadsheet,
+  Briefcase
+} from 'lucide-react';
+
+// --- MOCK DATA & INITIAL STATE ---
+// Removed parentName, upgraded to professional defaults
+const INITIAL_SETTINGS = {
+  academyName: "Elite Sports Academy",
+  contactNumber: "+91 98765 43210",
+  address: "123 Sports Complex, Mumbai",
+  defaultFee: 2000,
+  feeDueDay: 5,
+  currency: "₹",
+  sports: ["Cricket", "Football", "Basketball", "Swimming", "Badminton"],
+  batches: ["Morning (6 AM - 8 AM)", "Evening (4 PM - 6 PM)", "Weekend Special"]
+};
+
+const INITIAL_TEMPLATES = {
+  feeDue: "Hello,\n\nThis is a friendly reminder from [Academy Name] regarding the fees for [Student Name].\n\nMonthly Fees: [Currency][Amount]\nDue Date: [Due Date]\n\nPlease complete the pending payment at your convenience.\n\nThank you,\n[Academy Name]",
+  overdue: "URGENT: Hello,\n\nThis is an alert from [Academy Name] that fees for [Student Name] are OVERDUE.\n\nPending Amount: [Currency][Pending Amount]\nDue Date was: [Due Date]\n\nPlease pay immediately to avoid disruption in training.\n\nThank you.",
+  paymentConfirmation: "Hello,\n\nWe have received a payment of [Currency][Paid Amount] for [Student Name].\n\nThank you for your prompt payment!\n\nRegards,\n[Academy Name]"
+};
+
+const INITIAL_STUDENTS = [
+  { id: '1', name: 'Rahul Sharma', phone: '9876543210', dob: '2010-05-15', batch: 'Morning (6 AM - 8 AM)', sport: 'Cricket', joinDate: '2023-01-10', monthlyFee: 2500, nextDueDate: '2023-11-05', notes: 'Fast bowler' },
+  { id: '2', name: 'Priya Patel', phone: '9876543211', dob: '2008-08-22', batch: 'Evening (4 PM - 6 PM)', sport: 'Badminton', joinDate: '2023-03-01', monthlyFee: 2000, nextDueDate: '2023-10-05', notes: 'Needs new racket' },
+  { id: '3', name: 'Amit Singh', phone: '9876543212', dob: '2012-11-30', batch: 'Weekend Special', sport: 'Football', joinDate: '2023-06-15', monthlyFee: 1500, nextDueDate: '2023-11-10', notes: '' },
+];
+
+const INITIAL_PAYMENTS = [
+  { id: 'p1', studentId: '1', amount: 2500, date: '2023-10-04', method: 'UPI', receiptNo: 'RCP001' },
+  { id: 'p2', studentId: '3', amount: 1500, date: '2023-10-09', method: 'Cash', receiptNo: 'RCP002' },
+];
+
+// Robust Local Storage Hook to prevent crashes on corrupted data
+function useLocalStorage(key, initialValue) {
+  const [storedValue, setStoredValue] = useState(() => {
+    try {
+      if (typeof window === "undefined") return initialValue;
+      const item = window.localStorage.getItem(key);
+      return item ? JSON.parse(item) : initialValue;
+    } catch (error) {
+      console.warn(`Error reading localStorage key "${key}":`, error);
+      return initialValue;
+    }
+  });
+
+  const setValue = (value) => {
+    try {
+      const valueToStore = value instanceof Function ? value(storedValue) : value;
+      setStoredValue(valueToStore);
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(key, JSON.stringify(valueToStore));
+      }
+    } catch (error) {
+      console.warn(`Error setting localStorage key "${key}":`, error);
+    }
+  };
+  return [storedValue, setValue];
+}
+
+const generateId = () => Math.random().toString(36).substr(2, 9);
+
+const formatDate = (dateString) => {
+  if (!dateString) return 'N/A';
+  try {
+    const options = { year: 'numeric', month: 'short', day: 'numeric' };
+    return new Date(dateString).toLocaleDateString('en-IN', options);
+  } catch(e) {
+    return 'Invalid Date';
+  }
+};
+
+const calculateStatus = (dueDateStr) => {
+  if (!dueDateStr) return { status: 'UNKNOWN', color: 'slate', label: 'Unknown' };
+  try {
+    const today = new Date();
+    today.setHours(0,0,0,0);
+    const dueDate = new Date(dueDateStr);
+    dueDate.setHours(0,0,0,0);
+    
+    const diffTime = dueDate.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) return { status: 'OVERDUE', color: 'rose', label: 'Overdue', days: Math.abs(diffDays) };
+    if (diffDays <= 5) return { status: 'DUE_SOON', color: 'amber', label: 'Due Soon', days: diffDays };
+    return { status: 'PAID', color: 'emerald', label: 'Paid', days: diffDays };
+  } catch(e) {
+    return { status: 'UNKNOWN', color: 'slate', label: 'Unknown' };
+  }
+};
+
+const processTemplate = (template, student, settings, amountPaid = 0) => {
+  if (!student || !template) return "";
+  try {
+    let msg = String(template);
+    msg = msg.replace(/\[Student Name\]/g, student.name || '');
+    msg = msg.replace(/\[Currency\]/g, settings.currency || '');
+    msg = msg.replace(/\[Amount\]/g, student.monthlyFee || 0);
+    msg = msg.replace(/\[Paid Amount\]/g, amountPaid);
+    msg = msg.replace(/\[Pending Amount\]/g, student.monthlyFee || 0);
+    msg = msg.replace(/\[Due Date\]/g, formatDate(student.nextDueDate));
+    msg = msg.replace(/\[Academy Name\]/g, settings.academyName || '');
+    return msg;
+  } catch(e) {
+    return "Error generating message.";
+  }
+};
+
+const Card = ({ children, className = '', onClick }) => (
+  <div onClick={onClick} className={`bg-white rounded-xl shadow-[0_2px_10px_-3px_rgba(6,81,237,0.1)] border border-slate-200 overflow-hidden ${onClick ? 'cursor-pointer hover:border-indigo-300 hover:shadow-md transition-all active:scale-[0.99]' : ''} ${className}`}>
+    {children}
+  </div>
+);
+
+const Badge = ({ children, color = 'slate' }) => {
+  const colors = {
+    emerald: 'bg-emerald-50 text-emerald-700 border border-emerald-200',
+    rose: 'bg-rose-50 text-rose-700 border border-rose-200',
+    amber: 'bg-amber-50 text-amber-700 border border-amber-200',
+    indigo: 'bg-indigo-50 text-indigo-700 border border-indigo-200',
+    slate: 'bg-slate-100 text-slate-700 border border-slate-200'
+  };
+  return (
+    <span className={`px-2.5 py-1 rounded-full text-xs font-semibold tracking-wide ${colors[color] || colors.slate}`}>
+      {children}
+    </span>
+  );
+};
+
+const Button = ({ children, onClick, variant = 'primary', className = '', icon: Icon, disabled, type = 'button' }) => {
+  const baseStyle = "flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-medium transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm";
+  const variants = {
+    primary: "bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm hover:shadow",
+    secondary: "bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200",
+    danger: "bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200",
+    success: "bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm hover:shadow",
+    whatsapp: "bg-[#25D366] hover:bg-[#1DA851] text-white shadow-sm hover:shadow"
+  };
+  return (
+    <button type={type} disabled={disabled} onClick={onClick} className={`${baseStyle} ${variants[variant]} ${className}`}>
+      {Icon && <Icon size={16} strokeWidth={2.5} />}
+      {children}
+    </button>
+  );
+};
+
+const Modal = ({ isOpen, onClose, title, children }) => {
+  if (!isOpen) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 sm:p-0 transition-opacity">
+      <div className="bg-white rounded-t-2xl sm:rounded-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto animate-slide-up sm:animate-fade-in shadow-2xl border border-slate-100">
+        <div className="sticky top-0 bg-white/80 backdrop-blur-md border-b border-slate-100 px-6 py-4 flex justify-between items-center z-10">
+          <h2 className="text-lg font-bold text-slate-800">{title}</h2>
+          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors"><X size={20} /></button>
+        </div>
+        <div className="p-6">
+          {children}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const Input = ({ label, type = 'text', ...props }) => (
+  <div className="mb-4">
+    <label className="block text-sm font-semibold text-slate-700 mb-1.5">{label}</label>
+    <input 
+      type={type}
+      className="w-full border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none transition-all placeholder:text-slate-400 text-sm"
+      {...props}
+    />
+  </div>
+);
+
+const Select = ({ label, options, ...props }) => (
+  <div className="mb-4">
+    <label className="block text-sm font-semibold text-slate-700 mb-1.5">{label}</label>
+    <select className="w-full border border-slate-300 rounded-lg p-2.5 text-slate-800 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none bg-white transition-all text-sm" {...props}>
+      <option value="">Select...</option>
+      {options.map((opt, i) => (
+        <option key={i} value={opt}>{opt}</option>
+      ))}
+    </select>
+  </div>
+);
+
+export default function App() {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  
+  // Data State with Fallbacks to prevent crashes
+  const [rawStudents, setStudents] = useLocalStorage('safm_students_v2', INITIAL_STUDENTS);
+  const [rawPayments, setPayments] = useLocalStorage('safm_payments_v2', INITIAL_PAYMENTS);
+  const [rawSettings, setSettings] = useLocalStorage('safm_settings_v2', INITIAL_SETTINGS);
+  const [rawTemplates, setTemplates] = useLocalStorage('safm_templates_v2', INITIAL_TEMPLATES);
+
+  // Enforce array/object types defensively
+  const students = Array.isArray(rawStudents) ? rawStudents : [];
+  const payments = Array.isArray(rawPayments) ? rawPayments : [];
+  const settings = rawSettings || INITIAL_SETTINGS;
+  const templates = rawTemplates || INITIAL_TEMPLATES;
+
+  // UI State
+  const [selectedStudent, setSelectedStudent] = useState(null);
+  const [isStudentModalOpen, setIsStudentModalOpen] = useState(false);
+  const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
+  const [toastMsg, setToastMsg] = useState('');
+
+  // Tab specific states (Moved here to fix React Hook Rules violation & blank screen crash)
+  const [studentSearchTerm, setStudentSearchTerm] = useState('');
+  const [studentFilterSport, setStudentFilterSport] = useState('');
+  const [whatsappFilter, setWhatsappFilter] = useState('all');
+
+  const showToast = (msg) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(''), 3000);
+  };
+
+  // --- DERIVED DATA ---
+  const stats = useMemo(() => {
+    let active = students.length;
+    let pendingCount = 0;
+    let overdueCount = 0;
+    let dueSoonCount = 0;
+    let totalPendingAmount = 0;
+
+    const today = new Date();
+    const currentMonth = today.getMonth();
+    const currentYear = today.getFullYear();
+
+    let monthlyCollection = 0;
+
+    payments.forEach(p => {
+      try {
+        const pDate = new Date(p.date);
+        if (pDate.getMonth() === currentMonth && pDate.getFullYear() === currentYear) {
+          monthlyCollection += Number(p.amount) || 0;
+        }
+      } catch(e) {}
+    });
+
+    students.forEach(s => {
+      const st = calculateStatus(s.nextDueDate);
+      if (st.status === 'OVERDUE') {
+        overdueCount++;
+        totalPendingAmount += Number(s.monthlyFee) || 0;
+      } else if (st.status === 'DUE_SOON') {
+        dueSoonCount++;
+        pendingCount++;
+        totalPendingAmount += Number(s.monthlyFee) || 0;
+      }
+    });
+
+    return { active, monthlyCollection, overdueCount, dueSoonCount, totalPendingAmount, pendingCount };
+  }, [students, payments]);
+
+
+  // --- ACTIONS ---
+  const handleSaveStudent = (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const studentData = Object.fromEntries(formData.entries());
+    
+    if (selectedStudent) {
+      setStudents(students.map(s => s.id === selectedStudent.id ? { ...s, ...studentData } : s));
+      showToast("Student updated successfully");
+    } else {
+      setStudents([...students, { ...studentData, id: generateId() }]);
+      showToast("Student added successfully");
+    }
+    setIsStudentModalOpen(false);
+    setSelectedStudent(null);
+  };
+
+  const handleDeleteStudent = (id) => {
+    if(window.confirm("Are you sure you want to delete this student and their payment history?")) {
+      setStudents(students.filter(s => s.id !== id));
+      setPayments(payments.filter(p => p.studentId !== id));
+      setActiveTab('students');
+      setSelectedStudent(null);
+      showToast("Student deleted");
+    }
+  };
+
+  const handleRecordPayment = (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const paymentData = Object.fromEntries(formData.entries());
+    
+    const newPayment = {
+      ...paymentData,
+      id: generateId(),
+      receiptNo: `RCP${Math.floor(Math.random() * 10000)}`
+    };
+    
+    setPayments([...payments, newPayment]);
+
+    const student = students.find(s => s.id === paymentData.studentId);
+    if (student) {
+      try {
+        const currentDue = new Date(student.nextDueDate || new Date());
+        currentDue.setMonth(currentDue.getMonth() + 1);
+        
+        setStudents(students.map(s => 
+          s.id === student.id ? { ...s, nextDueDate: currentDue.toISOString().split('T')[0] } : s
+        ));
+      } catch(e) {
+        console.error("Error updating date", e);
+      }
+    }
+
+    setIsPaymentModalOpen(false);
+    showToast("Payment recorded successfully");
+  };
+
+  const openWhatsApp = (phone, message) => {
+    if (!phone) {
+      alert("No phone number provided for this student.");
+      return;
+    }
+    const formattedPhone = String(phone).replace(/\D/g, '');
+    const url = `https://wa.me/91${formattedPhone}?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank');
+  };
+
+  const renderDashboard = () => (
+    <div className="space-y-6 animate-fade-in pb-24">
+      <div className="flex justify-between items-end mb-2">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Overview</h1>
+          <p className="text-sm text-slate-500 mt-1">Here's what's happening at your academy today.</p>
+        </div>
+      </div>
+
+      {/* Professional Stats Grid */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card className="p-4 border-l-4 border-l-indigo-600">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-slate-500 font-medium text-xs uppercase tracking-wider">Total Students</p>
+              <h3 className="text-3xl font-bold text-slate-800 mt-1.5">{stats.active}</h3>
+            </div>
+            <div className="p-2 bg-indigo-50 rounded-lg text-indigo-600">
+              <Users size={20} />
+            </div>
+          </div>
+        </Card>
+        <Card className="p-4 border-l-4 border-l-emerald-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-slate-500 font-medium text-xs uppercase tracking-wider">Collected</p>
+              <h3 className="text-2xl font-bold text-slate-800 mt-1.5 truncate">{settings.currency}{stats.monthlyCollection}</h3>
+            </div>
+            <div className="p-2 bg-emerald-50 rounded-lg text-emerald-600">
+              <TrendingUp size={20} />
+            </div>
+          </div>
+        </Card>
+        <Card className="p-4 border-l-4 border-l-amber-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-slate-500 font-medium text-xs uppercase tracking-wider">Due Soon</p>
+              <h3 className="text-3xl font-bold text-slate-800 mt-1.5">{stats.dueSoonCount}</h3>
+            </div>
+            <div className="p-2 bg-amber-50 rounded-lg text-amber-600">
+              <Clock size={20} />
+            </div>
+          </div>
+        </Card>
+        <Card className="p-4 border-l-4 border-l-rose-500">
+          <div className="flex justify-between items-start">
+            <div>
+              <p className="text-slate-500 font-medium text-xs uppercase tracking-wider">Overdue</p>
+              <h3 className="text-3xl font-bold text-slate-800 mt-1.5">{stats.overdueCount}</h3>
+            </div>
+            <div className="p-2 bg-rose-50 rounded-lg text-rose-600">
+              <AlertCircle size={20} />
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      {/* Quick Actions */}
+      <div>
+        <h2 className="text-sm font-bold text-slate-800 mb-3 uppercase tracking-wider">Quick Actions</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Button onClick={() => { setSelectedStudent(null); setIsStudentModalOpen(true); }} icon={UserPlus}>Add Student</Button>
+          <Button onClick={() => setIsPaymentModalOpen(true)} variant="success" icon={CreditCard}>Receive Pay</Button>
+          <Button onClick={() => setActiveTab('whatsapp')} variant="whatsapp" icon={MessageCircle}>Reminders</Button>
+          <Button onClick={() => setActiveTab('reports')} variant="secondary" icon={FileSpreadsheet}>Reports</Button>
+        </div>
+      </div>
+
+      {/* Recent Activity & Charts Area */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Card className="p-0 overflow-hidden flex flex-col">
+          <div className="px-5 py-4 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+            <h2 className="text-sm font-bold text-slate-800 uppercase tracking-wider">Recent Transactions</h2>
+            <button onClick={() => setActiveTab('fees')} className="text-indigo-600 text-sm font-semibold hover:text-indigo-700 transition-colors">View All</button>
+          </div>
+          <div className="p-2 flex-1">
+            {payments.slice(-4).reverse().map(p => {
+              const student = students.find(s => s.id === p.studentId);
+              return (
+                <div key={p.id} className="flex justify-between items-center p-3 hover:bg-slate-50 rounded-xl transition-colors">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 bg-emerald-50 rounded-full flex items-center justify-center text-emerald-600 border border-emerald-100">
+                      <CheckCircle size={18} />
+                    </div>
+                    <div>
+                      <p className="font-semibold text-slate-800 text-sm">{student?.name || 'Unknown Student'}</p>
+                      <p className="text-xs text-slate-500 mt-0.5">{formatDate(p.date)} • {p.method}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="font-bold text-slate-800">+{settings.currency}{p.amount}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5 font-mono">#{p.receiptNo}</p>
+                  </div>
+                </div>
+              );
+            })}
+            {payments.length === 0 && <p className="text-slate-400 text-center py-8 text-sm">No recent transactions found.</p>}
+          </div>
+        </Card>
+
+        <Card className="p-5 flex flex-col justify-center">
+          <h2 className="text-sm font-bold text-slate-800 mb-6 uppercase tracking-wider">Fees Overview</h2>
+          <div className="flex flex-col gap-5">
+            <div className="flex items-center justify-between p-4 bg-emerald-50/50 border border-emerald-100 rounded-xl">
+              <div className="flex items-center gap-4">
+                <div className="w-2 h-10 bg-emerald-500 rounded-full"></div>
+                <div>
+                  <p className="text-xs font-semibold text-emerald-700 uppercase tracking-wide">Collected</p>
+                  <p className="text-2xl font-bold text-slate-800">{settings.currency}{stats.monthlyCollection}</p>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-between p-4 bg-rose-50/50 border border-rose-100 rounded-xl">
+              <div className="flex items-center gap-4">
+                <div className="w-2 h-10 bg-rose-500 rounded-full"></div>
+                <div>
+                  <p className="text-xs font-semibold text-rose-700 uppercase tracking-wide">Pending & Overdue</p>
+                  <p className="text-2xl font-bold text-slate-800">{settings.currency}{stats.totalPendingAmount}</p>
+                </div>
+              </div>
+            </div>
+            <div className="mt-2">
+              <div className="flex justify-between text-xs font-semibold text-slate-500 mb-2 uppercase tracking-wide">
+                <span>Collection Target</span>
+                <span>{stats.monthlyCollection > 0 ? 'In Progress' : 'Needs attention'}</span>
+              </div>
+              <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden shadow-inner">
+                <div className="bg-indigo-600 h-full rounded-full transition-all duration-1000 ease-out" style={{ width: `${Math.min(100, (stats.monthlyCollection / (stats.monthlyCollection + stats.totalPendingAmount || 1)) * 100)}%` }}></div>
+              </div>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+
+  const renderStudentsList = () => {
+    const filtered = students.filter(s => {
+      const matchName = s.name?.toLowerCase().includes(studentSearchTerm.toLowerCase());
+      const matchSport = studentFilterSport ? s.sport === studentFilterSport : true;
+      return matchName && matchSport;
+    });
+
+    return (
+      <div className="space-y-4 animate-fade-in pb-24">
+        <div className="flex justify-between items-center mb-4">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Athletes</h1>
+          <Button onClick={() => { setSelectedStudent(null); setIsStudentModalOpen(true); }} icon={Plus}>Add New</Button>
+        </div>
+
+        <div className="flex flex-col sm:flex-row gap-3 mb-6">
+          <div className="relative flex-1 shadow-sm">
+            <Search className="absolute left-3.5 top-3 text-slate-400" size={18} />
+            <input 
+              type="text" 
+              placeholder="Search athletes..." 
+              className="w-full pl-10 pr-4 py-2.5 border border-slate-300 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 outline-none text-sm transition-all"
+              value={studentSearchTerm}
+              onChange={e => setStudentSearchTerm(e.target.value)}
+            />
+          </div>
+          <select 
+            className="border border-slate-300 rounded-xl px-4 py-2.5 bg-white outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 text-sm font-medium text-slate-700 shadow-sm"
+            value={studentFilterSport}
+            onChange={e => setStudentFilterSport(e.target.value)}
+          >
+            <option value="">All Sports</option>
+            {settings.sports.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </div>
+
+        <div className="grid gap-3">
+          {filtered.map(student => {
+            const statusInfo = calculateStatus(student.nextDueDate);
+            return (
+              <Card key={student.id} onClick={() => { setSelectedStudent(student); setActiveTab('studentDetail'); }} className="p-4">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-full flex items-center justify-center font-bold text-lg shadow-inner">
+                      {student.name?.charAt(0) || '?'}
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-800 text-base">{student.name}</h3>
+                      <p className="text-xs text-slate-500 font-medium mt-0.5">{student.sport} • {student.batch}</p>
+                    </div>
+                  </div>
+                  <div className="text-right flex flex-col items-end gap-2">
+                    <Badge color={statusInfo.color}>{statusInfo.label}</Badge>
+                    <ChevronRight className="text-slate-300" size={18} />
+                  </div>
+                </div>
+              </Card>
+            );
+          })}
+          {filtered.length === 0 && (
+            <div className="text-center py-16 text-slate-400 bg-white rounded-xl border border-dashed border-slate-300">
+              <Briefcase size={48} className="mx-auto mb-4 opacity-30 text-slate-400" />
+              <p className="font-medium text-slate-600">No athletes found</p>
+              <p className="text-sm mt-1">Try adjusting your search or add a new athlete.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderStudentDetail = () => {
+    if (!selectedStudent) return null;
+    const statusInfo = calculateStatus(selectedStudent.nextDueDate);
+    const studentPayments = payments.filter(p => p.studentId === selectedStudent.id).sort((a,b) => new Date(b.date) - new Date(a.date));
+
+    return (
+      <div className="space-y-6 animate-fade-in pb-24">
+        <button onClick={() => setActiveTab('students')} className="text-slate-500 font-medium flex items-center gap-1.5 hover:text-indigo-600 transition-colors mb-2 text-sm bg-white px-3 py-1.5 rounded-lg border border-slate-200 shadow-sm w-fit">
+          <ChevronRight className="rotate-180" size={16} /> Back to Directory
+        </button>
+        
+        {/* Header Profile - Professional Look */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 flex flex-col md:flex-row items-center gap-6 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-16 bg-gradient-to-r from-indigo-600 to-indigo-800"></div>
+          
+          <button onClick={() => { setIsStudentModalOpen(true); }} className="absolute top-4 right-4 p-2.5 text-white bg-white/20 hover:bg-white/30 backdrop-blur-sm rounded-full transition-colors z-10 shadow-sm">
+            <Edit size={16} />
+          </button>
+          
+          <div className="w-24 h-24 bg-white text-indigo-700 border-4 border-white rounded-full flex items-center justify-center font-bold text-4xl shadow-md z-10 mt-2">
+            {selectedStudent.name?.charAt(0) || '?'}
+          </div>
+          
+          <div className="text-center md:text-left flex-1 z-10 pt-4 md:pt-10">
+            <h1 className="text-2xl font-bold text-slate-800">{selectedStudent.name}</h1>
+            <p className="text-slate-500 font-medium text-sm mt-0.5 mb-3">{selectedStudent.sport} • {selectedStudent.batch}</p>
+            <div className="flex flex-wrap justify-center md:justify-start gap-2">
+              <Badge color={statusInfo.color}>Fee: {statusInfo.label}</Badge>
+              <Badge color="slate">ID: #{selectedStudent.id}</Badge>
+            </div>
+          </div>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="grid grid-cols-2 gap-3">
+          <Button 
+            onClick={() => {
+              const msg = processTemplate(templates.feeDue, selectedStudent, settings);
+              openWhatsApp(selectedStudent.phone, msg);
+            }} 
+            variant="whatsapp" 
+            icon={Phone}
+          >
+            WhatsApp
+          </Button>
+          <Button 
+            onClick={() => { setIsPaymentModalOpen(true); setTimeout(() => {
+              const el = document.getElementById('paymentStudentId');
+              if(el) el.value = selectedStudent.id;
+            }, 50); }} 
+            variant="success" 
+            icon={CreditCard}
+          >
+            Receive Pay
+          </Button>
+        </div>
+
+        {/* Details Grid */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          <Card className="p-0 overflow-hidden">
+             <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+              <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider">Profile Information</h3>
+             </div>
+            <div className="p-5 space-y-4 text-sm">
+              <div className="grid grid-cols-3 items-center"><span className="text-slate-500 font-medium">Phone:</span> <span className="col-span-2 font-semibold text-slate-800">{selectedStudent.phone}</span></div>
+              <div className="grid grid-cols-3 items-center"><span className="text-slate-500 font-medium">DOB:</span> <span className="col-span-2 font-semibold text-slate-800">{formatDate(selectedStudent.dob)}</span></div>
+              <div className="grid grid-cols-3 items-center"><span className="text-slate-500 font-medium">Joined:</span> <span className="col-span-2 font-semibold text-slate-800">{formatDate(selectedStudent.joinDate)}</span></div>
+            </div>
+          </Card>
+
+          <Card className="p-0 overflow-hidden">
+            <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+              <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider">Billing & Status</h3>
+             </div>
+            <div className="p-5 space-y-4 text-sm">
+              <div className="grid grid-cols-3 items-center"><span className="text-slate-500 font-medium">Monthly Fee:</span> <span className="col-span-2 font-bold text-base text-indigo-600">{settings.currency}{selectedStudent.monthlyFee}</span></div>
+              <div className="grid grid-cols-3 items-center"><span className="text-slate-500 font-medium">Next Due:</span> <span className="col-span-2 font-semibold text-slate-800">{formatDate(selectedStudent.nextDueDate)}</span></div>
+              <div className="grid grid-cols-3 items-center"><span className="text-slate-500 font-medium">Status:</span> <span className="col-span-2"><Badge color={statusInfo.color}>{statusInfo.label}</Badge></span></div>
+            </div>
+            {selectedStudent.notes && (
+              <div className="px-5 pb-5 pt-0">
+                <div className="bg-amber-50 border border-amber-100 p-3 rounded-lg">
+                  <span className="text-amber-800 text-xs font-bold uppercase tracking-wider block mb-1">Notes:</span>
+                  <p className="text-sm text-amber-900 font-medium">{selectedStudent.notes}</p>
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
+
+        {/* Payment History */}
+        <Card className="p-0 overflow-hidden">
+          <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider">Transaction History</h3>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {studentPayments.length > 0 ? studentPayments.map(p => (
+              <div key={p.id} className="flex justify-between items-center p-4 bg-white hover:bg-slate-50 transition-colors">
+                <div>
+                  <p className="font-bold text-slate-800 text-base">{settings.currency}{p.amount}</p>
+                  <p className="text-xs text-slate-500 font-medium mt-0.5">{formatDate(p.date)} via {p.method}</p>
+                </div>
+                <div className="text-right">
+                  <Badge color="emerald">Confirmed</Badge>
+                  <p className="text-[10px] font-mono text-slate-400 mt-1.5">REF: {p.receiptNo}</p>
+                </div>
+              </div>
+            )) : (
+              <p className="text-slate-400 text-center py-8 text-sm font-medium">No payment history found.</p>
+            )}
+          </div>
+        </Card>
+        
+        <div className="flex justify-center pt-6">
+           <Button onClick={() => handleDeleteStudent(selectedStudent.id)} variant="danger" icon={Trash2} className="w-full md:w-auto">Permanently Delete Record</Button>
+        </div>
+      </div>
+    );
+  };
+
+  const renderFees = () => {
+    return (
+      <div className="space-y-6 animate-fade-in pb-24">
+        <div className="flex justify-between items-center">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Finance</h1>
+          <Button onClick={() => setIsPaymentModalOpen(true)} icon={Plus}>Record Payment</Button>
+        </div>
+
+        <Card className="p-0 overflow-hidden">
+          <div className="bg-slate-50 px-5 py-4 border-b border-slate-100 flex justify-between items-center">
+            <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider">All Transactions</h3>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {payments.slice().reverse().map(p => {
+              const student = students.find(s => s.id === p.studentId);
+              return (
+                <div key={p.id} className="p-4 flex justify-between items-center bg-white hover:bg-slate-50 transition-colors">
+                   <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 bg-indigo-50 text-indigo-600 rounded-full flex items-center justify-center border border-indigo-100">
+                      <CreditCard size={18} />
+                    </div>
+                    <div>
+                      <p className="font-bold text-slate-800 text-sm">{student ? student.name : 'Unknown Student'}</p>
+                      <p className="text-xs text-slate-500 font-medium mt-0.5">{formatDate(p.date)} • {p.method} • <span className="font-mono text-slate-400">{p.receiptNo}</span></p>
+                    </div>
+                  </div>
+                  <div className="font-bold text-emerald-600 text-lg">
+                    +{settings.currency}{p.amount}
+                  </div>
+                </div>
+              )
+            })}
+            {payments.length === 0 && <p className="p-8 text-center text-slate-400 font-medium text-sm">No transactions recorded yet.</p>}
+          </div>
+        </Card>
+      </div>
+    );
+  };
+
+  const renderWhatsApp = () => {
+    let targetStudents = students;
+    if (whatsappFilter === 'overdue') {
+      targetStudents = students.filter(s => calculateStatus(s.nextDueDate).status === 'OVERDUE');
+    } else if (whatsappFilter === 'due_soon') {
+       targetStudents = students.filter(s => calculateStatus(s.nextDueDate).status === 'DUE_SOON');
+    }
+
+    const handleBulkSend = () => {
+      if(targetStudents.length === 0) return;
+      alert(`This action pre-compiles messages for ${targetStudents.length} athletes.\nUse the individual Send buttons below to dispatch via WhatsApp safely without spam blocks.`);
+    };
+
+    return (
+      <div className="space-y-6 animate-fade-in pb-24">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Communications</h1>
+        
+        <Card className="p-6 border-l-4 border-l-[#25D366]">
+          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2 mb-2"><MessageCircle size={20} className="text-[#25D366]"/> Message Center</h2>
+          <p className="text-sm text-slate-500 font-medium mb-5">Filter and dispatch personalized fee reminders directly through WhatsApp.</p>
+          
+          <div className="flex flex-col sm:flex-row gap-3 mb-2">
+            <select className="border border-slate-300 rounded-xl px-4 py-2.5 bg-white flex-1 outline-none focus:ring-2 focus:ring-[#25D366]/20 focus:border-[#25D366] text-sm font-medium text-slate-700 shadow-sm" value={whatsappFilter} onChange={e=>setWhatsappFilter(e.target.value)}>
+              <option value="all">All Pending Candidates ({students.length})</option>
+              <option value="overdue">Overdue Accounts ({students.filter(s => calculateStatus(s.nextDueDate).status === 'OVERDUE').length})</option>
+              <option value="due_soon">Upcoming Dues ({students.filter(s => calculateStatus(s.nextDueDate).status === 'DUE_SOON').length})</option>
+            </select>
+            <Button variant="whatsapp" onClick={handleBulkSend}>Prepare List</Button>
+          </div>
+        </Card>
+
+        <div className="space-y-3">
+          <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider ml-1 mt-6 mb-4">Dispatch Queue</h3>
+          {targetStudents.map(student => {
+             const statusInfo = calculateStatus(student.nextDueDate);
+             return (
+              <Card key={student.id} className="p-4 flex justify-between items-center bg-white">
+                <div>
+                  <p className="font-bold text-slate-800 text-base mb-1">{student.name}</p>
+                  <p className="text-xs text-slate-500 font-medium flex items-center gap-2">Due: {formatDate(student.nextDueDate)} <Badge color={statusInfo.color}>{statusInfo.label}</Badge></p>
+                </div>
+                <Button 
+                  onClick={() => {
+                    const template = statusInfo.status === 'OVERDUE' ? templates.overdue : templates.feeDue;
+                    const msg = processTemplate(template, student, settings);
+                    openWhatsApp(student.phone, msg);
+                  }}
+                  variant="secondary"
+                  className="!py-1.5 !px-3 border-[#25D366]/30 text-[#1DA851] hover:bg-[#25D366]/10 hover:border-[#25D366]/50"
+                  icon={Share2}
+                >
+                  Send
+                </Button>
+              </Card>
+             )
+          })}
+          {targetStudents.length === 0 && (
+            <div className="text-center py-12 text-slate-400 bg-slate-50 rounded-xl border border-dashed border-slate-300">
+              <CheckCircle size={36} className="mx-auto mb-3 opacity-30 text-emerald-500" />
+              <p className="font-medium text-slate-600">All caught up!</p>
+              <p className="text-sm mt-1">No athletes match this filter.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const renderSettings = () => (
+    <div className="space-y-6 animate-fade-in pb-24">
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Configuration</h1>
+      
+      <Card className="p-0 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+          <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center gap-2"><Settings size={18} className="text-slate-500"/> Academy Profile</h3>
+        </div>
+        <div className="p-6 space-y-4">
+          <Input label="Academy Name" defaultValue={settings.academyName} />
+          <Input label="Contact Number" defaultValue={settings.contactNumber} />
+          <div className="grid grid-cols-2 gap-4">
+            <Input label="Currency Symbol" defaultValue={settings.currency} />
+            <Input label="Default Monthly Fee" type="number" defaultValue={settings.defaultFee} />
+          </div>
+          <div className="pt-2">
+            <Button>Save Configuration</Button>
+          </div>
+        </div>
+      </Card>
+
+      <Card className="p-0 overflow-hidden">
+        <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/50">
+          <h3 className="font-bold text-slate-800 text-sm uppercase tracking-wider flex items-center gap-2"><FileText size={18} className="text-slate-500"/> Message Templates</h3>
+        </div>
+        <div className="p-6 space-y-5">
+          <div>
+             <label className="block text-sm font-semibold text-slate-700 mb-2">Standard Fee Due Notice</label>
+             <textarea className="w-full border border-slate-300 rounded-xl p-3 text-sm h-32 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium text-slate-700" defaultValue={templates.feeDue}></textarea>
+          </div>
+          <div>
+             <label className="block text-sm font-semibold text-slate-700 mb-2">Overdue Warning Notice</label>
+             <textarea className="w-full border border-slate-300 rounded-xl p-3 text-sm h-32 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all font-medium text-slate-700" defaultValue={templates.overdue}></textarea>
+          </div>
+          <div className="pt-2">
+             <Button variant="secondary">Update Templates</Button>
+          </div>
+        </div>
+      </Card>
+
+       <Card className="p-0 overflow-hidden border-rose-200">
+        <div className="px-5 py-4 border-b border-rose-100 bg-rose-50 flex items-center gap-2">
+          <AlertCircle size={18} className="text-rose-600"/>
+          <h3 className="font-bold text-rose-800 text-sm uppercase tracking-wider">System Reset</h3>
+        </div>
+        <div className="p-6">
+          <p className="text-sm text-slate-600 font-medium mb-5">Clearing data will permanently delete all athletes, payment history, and configurations from this device.</p>
+          <Button variant="danger" onClick={() => {
+            if(window.confirm("CRITICAL WARNING: Wipe all local data? This action cannot be reversed.")) {
+              window.localStorage.clear();
+              window.location.reload();
+            }
+          }}>Erase All Data</Button>
+        </div>
+      </Card>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-indigo-200">
+      
+      {/* Top Header App Bar */}
+      <header className="bg-slate-900 sticky top-0 z-30 px-5 py-3.5 shadow-md flex justify-between items-center transition-all">
+        <div className="flex items-center gap-3">
+          <div className="bg-indigo-600 p-1.5 rounded-lg text-white shadow-inner">
+            <Activity size={20} strokeWidth={2.5} />
+          </div>
+          <h1 className="font-bold text-lg text-white tracking-wide">{settings.academyName || 'Sports Manager'}</h1>
+        </div>
+        <div className="w-9 h-9 bg-slate-800 rounded-full flex items-center justify-center text-slate-300 border border-slate-700 font-bold text-sm shadow-inner cursor-pointer hover:bg-slate-700 transition-colors">
+          A
+        </div>
+      </header>
+
+      {/* Main Content Area */}
+      <main className="p-4 md:p-6 max-w-4xl mx-auto min-h-screen">
+        {activeTab === 'dashboard' && renderDashboard()}
+        {activeTab === 'students' && renderStudentsList()}
+        {activeTab === 'studentDetail' && renderStudentDetail()}
+        {activeTab === 'fees' && renderFees()}
+        {activeTab === 'whatsapp' && renderWhatsApp()}
+        {activeTab === 'settings' && renderSettings()}
+        {activeTab === 'reports' && (
+           <div className="py-24 text-center text-slate-500 bg-white rounded-2xl border border-dashed border-slate-300 mt-4">
+             <FileSpreadsheet size={48} className="mx-auto mb-4 opacity-30 text-indigo-500" />
+             <h2 className="text-xl font-bold mb-2 text-slate-700">Reporting Engine</h2>
+             <p className="font-medium">Advanced PDF and Excel exports are coming in the next update.</p>
+             <Button className="mt-6 mx-auto" onClick={()=>setActiveTab('dashboard')}>Return to Dashboard</Button>
+           </div>
+        )}
+      </main>
+
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-slate-800 text-white px-5 py-3 rounded-xl shadow-2xl z-50 animate-fade-in flex items-center gap-3 border border-slate-700 font-medium text-sm">
+          <CheckCircle size={18} className="text-emerald-400" />
+          {toastMsg}
+        </div>
+      )}
+
+      {/* Bottom Navigation */}
+      <nav className="fixed bottom-0 w-full bg-white/90 backdrop-blur-lg border-t border-slate-200 flex justify-around items-center pb-safe pt-2 px-2 z-40 pb-3 md:pb-4 shadow-[0_-10px_40px_rgba(0,0,0,0.05)]">
+        {[
+          { id: 'dashboard', icon: Home, label: 'Home' },
+          { id: 'students', icon: Users, label: 'Athletes' },
+          { id: 'fees', icon: CreditCard, label: 'Finance' },
+          { id: 'whatsapp', icon: MessageCircle, label: 'Notify' },
+          { id: 'settings', icon: Settings, label: 'More' }
+        ].map(tab => {
+          const isActive = activeTab === tab.id || (tab.id === 'students' && activeTab === 'studentDetail');
+          const Icon = tab.icon;
+          return (
+            <button 
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex flex-col items-center p-2 min-w-[64px] transition-all rounded-xl relative ${isActive ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600 hover:bg-slate-50'}`}
+            >
+              {isActive && <div className="absolute top-0 w-8 h-1 bg-indigo-600 rounded-b-full shadow-[0_2px_8px_rgba(79,70,229,0.5)]"></div>}
+              <Icon size={22} className={`mt-1 ${isActive ? 'animate-bounce-short' : ''}`} strokeWidth={isActive ? 2.5 : 2} />
+              <span className={`text-[10px] mt-1 tracking-wide ${isActive ? 'font-bold' : 'font-medium'}`}>{tab.label}</span>
+            </button>
+          )
+        })}
+      </nav>
+
+      {/* Add/Edit Student Modal */}
+      <Modal isOpen={isStudentModalOpen} onClose={() => { setIsStudentModalOpen(false); setSelectedStudent(null); }} title={selectedStudent ? "Edit Athlete Profile" : "Register New Athlete"}>
+        <form onSubmit={handleSaveStudent}>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5">
+            <Input label="Athlete Name" name="name" required defaultValue={selectedStudent?.name} placeholder="e.g. Virat Kohli" />
+            <Input label="Mobile / WhatsApp" name="phone" type="tel" required defaultValue={selectedStudent?.phone} placeholder="10 digit number" />
+            
+            <Select label="Primary Sport" name="sport" required defaultValue={selectedStudent?.sport} options={settings.sports} />
+            <Select label="Assigned Batch" name="batch" required defaultValue={selectedStudent?.batch} options={settings.batches} />
+            
+            <Input label="Date of Birth" name="dob" type="date" defaultValue={selectedStudent?.dob} />
+            <Input label="Joining Date" name="joinDate" type="date" required defaultValue={selectedStudent?.joinDate || new Date().toISOString().split('T')[0]} />
+            
+            <Input label={`Monthly Fee (${settings.currency})`} name="monthlyFee" type="number" required defaultValue={selectedStudent?.monthlyFee || settings.defaultFee} />
+            <Input label="Next Due Date" name="nextDueDate" type="date" required defaultValue={selectedStudent?.nextDueDate} />
+            
+             <div className="md:col-span-2 mb-2">
+               <label className="block text-sm font-semibold text-slate-700 mb-2">Internal Notes</label>
+               <textarea name="notes" className="w-full border border-slate-300 rounded-xl p-3 outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-all text-sm font-medium text-slate-700 placeholder:text-slate-400" rows="2" placeholder="Dietary needs, equipment requirements, etc." defaultValue={selectedStudent?.notes}></textarea>
+             </div>
+          </div>
+          <div className="flex justify-end gap-3 mt-4 pt-5 border-t border-slate-100">
+            <Button type="button" variant="secondary" onClick={() => setIsStudentModalOpen(false)}>Cancel</Button>
+            <Button type="submit" icon={CheckCircle}>Save Profile</Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Record Payment Modal */}
+      <Modal isOpen={isPaymentModalOpen} onClose={() => setIsPaymentModalOpen(false)} title="Log Payment">
+        <form onSubmit={handleRecordPayment}>
+          <Select 
+            label="Select Athlete" 
+            name="studentId" 
+            required 
+            id="paymentStudentId"
+            defaultValue={selectedStudent?.id}
+            options={[]} 
+          >
+             <option value="">-- Choose Athlete --</option>
+             {students.map(s => <option key={s.id} value={s.id}>{s.name} ({s.sport})</option>)}
+          </Select>
+          
+          <Input label={`Amount Paid (${settings.currency})`} name="amount" type="number" required placeholder="e.g. 2000" />
+          <Input label="Date Received" name="date" type="date" required defaultValue={new Date().toISOString().split('T')[0]} />
+          
+          <Select label="Payment Method" name="method" required options={['Cash', 'UPI', 'Bank Transfer', 'Card', 'Other']} />
+          
+          <div className="bg-indigo-50 border border-indigo-100 p-4 rounded-xl flex gap-3 text-sm text-indigo-900 mb-6 font-medium">
+             <AlertCircle size={20} className="shrink-0 text-indigo-600" />
+             <p>Logging a payment automatically generates an internal receipt and pushes the athlete's next due date forward by one month.</p>
+          </div>
+
+          <div className="flex justify-end gap-3 border-t border-slate-100 pt-5">
+            <Button type="button" variant="secondary" onClick={() => setIsPaymentModalOpen(false)}>Cancel</Button>
+            <Button type="submit" variant="success" icon={CreditCard}>Confirm Transaction</Button>
+          </div>
+        </form>
+      </Modal>
+
+      {/* Embedded CSS for animations and safe area sizing */}
+      <style dangerouslySetInnerHTML={{__html: `
+        @tailwind base;
+        @tailwind components;
+        @tailwind utilities;
+
+        .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+        
+        @keyframes slideUp {
+          from { transform: translateY(100%); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+        @keyframes bounceShort {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-4px); }
+        }
+        
+        .animate-slide-up { animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .animate-fade-in { animation: fadeIn 0.3s ease-out forwards; }
+        .animate-bounce-short { animation: bounceShort 0.3s ease-in-out; }
+        
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+      `}} />
+    </div>
+  );
+}
+```
